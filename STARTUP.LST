@@ -1,0 +1,429 @@
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 1
+startup.asm
+
+
+
+      1					 ; MMMOC -- учебная операционная система
+      2					 ; (c) 2003, Kolia Morev <kolia39@mail.ru>
+      3					 ;
+      4					 ; Начальная загрузка ОС.
+      5
+      6					 .386p
+      7
+      8		  =0200			 TASK_STACK_SIZE = 200h	 ; Размер стека	задачи
+      9		  =0040			 NOGD =	64		 ; Число глобальных дескрипторов
+     10		  =0100			 NOINT = 256		 ; Число прерываний
+     11
+     12					 extrn	 C kernel:proc
+     13					 extrn	 C tasks
+     14
+     15					 ; Описания системных структур и их значения по	умолчанию:
+     16
+     17					 ; Дескриптор сегмента
+     18	00000000			 descr	 struc
+     19	00000000  01*(0000)		  limit	  dw	  0	  ; Граница (биты 0..15)
+     20	00000002  01*(0000)		  base_l  dw	  0	  ; База (биты 0..15)
+     21	00000004  01*(00)		  base_m  db	  0	  ; База (биты 16..23)
+     22	00000005  01*(00)		  attr_1  db	  0	  ; Байт атрибутов 1
+     23	00000006  01*(00)		  attr_2  db	  0	  ; Граница (биты 16..19) и атрибуты 2
+     24	00000007  01*(00)		  base_h  db	  0	  ; База (биты 24..31)
+     25	00000008			 descr	 ends
+     26
+     27					 ; Шлюз	прерывания
+     28	00000000			 intr	 struc
+     29	00000000  01*(04*(0000))		 dw 4 dup (0)
+     30	00000008			 intr	 ends
+     31
+     32					 ; Различные макросы:
+     33
+     34					 ; Преобразование адреса вида "сегмент:смещение"
+     35					 ; в физический	адрес. Результат -- в eax.
+     36					 physical_addr	 macro	 segaddr,offsaddr
+     37						 xor	 eax,eax
+     38						 mov	 ax,segaddr
+     39						 shl	 eax,4
+     40						 add	 ax,offset offsaddr
+     41							 endm
+     42
+     43					 ; Установка полей base	дескриптора.
+     44					 ; descr -- адрес дескриптора
+     45					 ; eax -- физический адрес
+     46					 set_descr_base	 macro	 descr
+     47						 mov	 descr.base_l,ax
+     48						 shr	 eax,16
+     49						 mov	 descr.base_m,al
+     50						 mov	 descr.base_h,ah
+     51							 endm
+     52
+     53					 ; Задержка
+     54					 delay		 macro
+     55						 jmp	 $+2
+     56							 endm
+     57
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 2
+startup.asm
+
+
+
+     58					 DGROUP	 group	 _DATA,_BSS
+     59						 assume	 cs:_TEXT,ds:DGROUP
+     60	    0000			 _DATA	 segment word public use16 'DATA'
+     61
+     62					 public	 C gdt
+     63	    0000			 gdt		 label	 word
+     64	    0000  0000 0000 00 00 00  +	 gdt_null	 descr	 <0,0,0,0,0,0>
+     65		  00
+     66		  =0008			 sel_code	 = 10q
+     67	    0008  FFFF 0000 00 9A 00  +	 gdt_code	 descr	 <0FFFFh,,,10011010b>
+     68		  00
+     69		  =0010			 sel_data	 = 20q
+     70	    0010  FFFF 0000 00 92 00  +	 gdt_data	 descr	 <0FFFFh,,,10010010b>
+     71		  00
+     72		  =0018			 sel_stack	 = 30q
+     73	    0018  0200 0000 00 92 00  +	 gdt_stack	 descr	 <TASK_STACK_SIZE,,,10010010b>
+     74		  00
+     75		  =0020			 sel_tss_0	 = 40q
+     76	    0020  0067 0000 00 89 00  +	 gdt_tss_0	 descr	 <103,,,89h>
+     77		  00
+     78	    0028  3B*(0000 0000	00 00 +			 descr	 59 dup	(<>)
+     79		  00 00)
+     80		  =0200			 gdt_size = NOGD * size	descr
+     81
+     82					 public	 C idt
+     83	    0200			 idt	 label	 word
+     84	    0200  0100*(04*(0000))		 intr	 NOINT dup (<>)
+     85		  =0800			 idt_size = NOINT * size intr
+     86
+     87					 ; Поля	данных программы
+     88	    0A00  0000 0000 00 00 00  +	 tmpdescr	 descr	 <>
+     89		  00
+     90	    0A08  2A 20	65 78 69 74 3A+	 message_exit	 db	 '* exit: PeaJIbHbIu Pe>|<uM.$'
+     91		  20 50	65 61 4A 49 62+
+     92		  48 62	49 75 20 50 65+
+     93		  3E 7C	3C 75 4D 2E 24
+     94
+     95					 ; Сохраненные значения	сегмента кода
+     96					 ; и данных из реального режима
+     97					 public	 C real_data
+     98	    0A24  0000s			 real_data	 dw	 dgroup
+     99					 public	 C real_text
+    100	    0A26  0000s			 real_text	 dw	 _text
+    101
+    102	    0A28			 _DATA	 ends
+    103
+    104	    0000			 _BSS	 segment word public use16 'BSS'
+    105	    0000			 _BSS	 ends
+    106
+    107	    0000			 _TEXT	 segment byte public use16 'CODE'
+    108						 assume	 cs:_TEXT,ds:DGROUP
+    109
+    110	    0000			 startup:
+    111	    0000  B8 0000s			 mov	 ax,dgroup
+    112	    0003  8E D8				 mov	 ds,ax
+    113
+    114					 ; Установка поля базы дескрипторов
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 3
+startup.asm
+
+
+
+    115						 physical_addr	 dgroup,0
+1   116	    0005  66| 33 C0			 xor	 eax,eax
+1   117	    0008  B8 0000s			 mov	 ax,dgroup
+1   118	    000B  66| C1 E0 04			 shl	 eax,4
+1   119	    000F  05 0000			 add	 ax,offset 0
+    120						 set_descr_base	 gdt_data
+1   121	    0012  A3 0012r			 mov	 gdt_data.base_l,ax
+1   122	    0015  66| C1 E8 10			 shr	 eax,16
+1   123	    0019  A2 0014r			 mov	 gdt_data.base_m,al
+1   124	    001C  88 26	0017r			 mov	 gdt_data.base_h,ah
+    125
+    126						 physical_addr	 _text,0
+1   127	    0020  66| 33 C0			 xor	 eax,eax
+1   128	    0023  B8 0000s			 mov	 ax,_text
+1   129	    0026  66| C1 E0 04			 shl	 eax,4
+1   130	    002A  05 0000			 add	 ax,offset 0
+    131						 set_descr_base	 gdt_code
+1   132	    002D  A3 000Ar			 mov	 gdt_code.base_l,ax
+1   133	    0030  66| C1 E8 10			 shr	 eax,16
+1   134	    0034  A2 000Cr			 mov	 gdt_code.base_m,al
+1   135	    0037  88 26	000Fr			 mov	 gdt_code.base_h,ah
+    136
+    137						 physical_addr	 dgroup,tasks	 ; стек	задачи 0
+1   138	    003B  66| 33 C0			 xor	 eax,eax
+1   139	    003E  B8 0000s			 mov	 ax,dgroup
+1   140	    0041  66| C1 E0 04			 shl	 eax,4
+1   141	    0045  05 0000e			 add	 ax,offset tasks
+    142						 set_descr_base	 gdt_stack
+1   143	    0048  A3 001Ar			 mov	 gdt_stack.base_l,ax
+1   144	    004B  66| C1 E8 10			 shr	 eax,16
+1   145	    004F  A2 001Cr			 mov	 gdt_stack.base_m,al
+1   146	    0052  88 26	001Fr			 mov	 gdt_stack.base_h,ah
+    147
+    148						 physical_addr	 dgroup,tasks	 ; указывает на	tss_0
+1   149	    0056  66| 33 C0			 xor	 eax,eax
+1   150	    0059  B8 0000s			 mov	 ax,dgroup
+1   151	    005C  66| C1 E0 04			 shl	 eax,4
+1   152	    0060  05 0000e			 add	 ax,offset tasks
+    153						 set_descr_base	 gdt_tss_0
+1   154	    0063  A3 0022r			 mov	 gdt_tss_0.base_l,ax
+1   155	    0066  66| C1 E8 10			 shr	 eax,16
+1   156	    006A  A2 0024r			 mov	 gdt_tss_0.base_m,al
+1   157	    006D  88 26	0027r			 mov	 gdt_tss_0.base_h,ah
+    158
+    159					 ; Подготовка псевдодескриптора	и загрузка регистра GDTR
+    160						 physical_addr	 dgroup,gdt
+1   161	    0071  66| 33 C0			 xor	 eax,eax
+1   162	    0074  B8 0000s			 mov	 ax,dgroup
+1   163	    0077  66| C1 E0 04			 shl	 eax,4
+1   164	    007B  05 0000r			 add	 ax,offset gdt
+    165						 set_descr_base	 tmpdescr
+1   166	    007E  A3 0A02r			 mov	 tmpdescr.base_l,ax
+1   167	    0081  66| C1 E8 10			 shr	 eax,16
+1   168	    0085  A2 0A04r			 mov	 tmpdescr.base_m,al
+1   169	    0088  88 26	0A07r			 mov	 tmpdescr.base_h,ah
+    170	    008C  C7 06	0A00r 01FF		 mov	 tmpdescr.limit,gdt_size-1
+    171	    0092  0F 01	16 0A00r		 lgdt	 tmpdescr
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 4
+startup.asm
+
+
+
+    172
+    173					 ; Подготовка к	переходу в защищённый режим
+    174	    0097  FA				 cli			 ; Запрет аппаратных прерываний
+    175	    0098  B0 8F				 mov	 al,8fh		 ; Запрет NMI
+    176	    009A  E6 70				 out	 70h,al		 ; Порт	CMOS
+    177						 delay
+1   178	    009C  EB 00				 jmp	 $+2
+    179	    009E  B0 05				 mov	 al,05h		 ; Байт	состояния отключения 05:
+    180	    00A0  E6 71				 out	 71h,al		 ; возврат в программу и
+    181									 ; перепрограммир. контроллеров
+    182	    00A2  B8 0040			 mov	 ax,40h		 ; Загрузка в область
+    183	    00A5  8E C0				 mov	 es,ax		 ; данных BIOS адреса возврата
+    184									 ; в программу
+    185	    00A7  26: C7 06 0067 0150r		 mov	 word ptr es:[67h],offset return
+    186	    00AE  26: 8C 0E 0069		 mov	 word ptr es:[69h],cs
+    187
+    188					 ; Перепрограммирование	ведущего контроллера прерываний
+    189					 ; Базовый вектор теперь 20h
+    190	    00B3  BA 0020			 mov	 dx,20h		 ; Порт	контроллера
+    191	    00B6  B0 11				 mov	 al,11h		 ; СКИ1: будет СКИ3
+    192	    00B8  EE				 out	 dx,al
+    193						 delay
+1   194	    00B9  EB 00				 jmp	 $+2
+    195	    00BB  42				 inc	 dx		 ; Второй порт контроллера
+    196	    00BC  B0 20				 mov	 al,20h		 ; СКИ2: базовый вектор
+    197	    00BE  EE				 out	 dx,al
+    198						 delay
+1   199	    00BF  EB 00				 jmp	 $+2
+    200	    00C1  B0 04				 mov	 al,4		 ; СКИ3: ведомый подключен к уровню 2
+    201	    00C3  EE				 out	 dx,al
+    202						 delay
+1   203	    00C4  EB 00				 jmp	 $+2
+    204	    00C6  B0 01				 mov	 al,1		 ; СКИ4: 80x86,	требуется EOI
+    205	    00C8  EE				 out	 dx,al
+    206	    00C9  B0 FC				 mov	 al,0fch	 ; Маска прерываний
+    207	    00CB  EE				 out	 dx,al
+    208
+    209					 ; Инициализация ведомого контроллера
+    210					 ; Базовый вектор теперь 28h
+    211	    00CC  BA 00A0			 mov	 dx,0a0h	 ; Порт	контроллера
+    212	    00CF  B0 11				 mov	 al,11h		 ; СКИ1: будет СКИ3
+    213	    00D1  EE				 out	 dx,al
+    214						 delay
+1   215	    00D2  EB 00				 jmp	 $+2
+    216	    00D4  42				 inc	 dx		 ; Второй порт контроллера
+    217	    00D5  B0 28				 mov	 al,28h		 ; СКИ2: базовый вектор
+    218	    00D7  EE				 out	 dx,al
+    219						 delay
+1   220	    00D8  EB 00				 jmp	 $+2
+    221	    00DA  B0 02				 mov	 al,2		 ; СКИ3: ведомый подключен к уровню 2
+    222	    00DC  EE				 out	 dx,al
+    223						 delay
+1   224	    00DD  EB 00				 jmp	 $+2
+    225	    00DF  B0 01				 mov	 al,1		 ; СКИ4: 80x86,	требуется EOI
+    226	    00E1  EE				 out	 dx,al
+    227						 delay
+1   228	    00E2  EB 00				 jmp	 $+2
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 5
+startup.asm
+
+
+
+    229
+    230					 ; Запретить все прерывания в ведомом контроллере
+    231	    00E4  BA 00A1			 mov	 dx,0a1h	 ; Порт	ведомого контроллера
+    232	    00E7  B0 FF				 mov	 al,0ffh	 ; Маска прерываний -
+    233	    00E9  EE				 out	 dx,al		 ; замаскируем все прерывания
+    234
+    235					 ; Загрузка IDTR
+    236						 physical_addr	 dgroup,idt
+1   237	    00EA  66| 33 C0			 xor	 eax,eax
+1   238	    00ED  B8 0000s			 mov	 ax,dgroup
+1   239	    00F0  66| C1 E0 04			 shl	 eax,4
+1   240	    00F4  05 0200r			 add	 ax,offset idt
+    241						 set_descr_base	 tmpdescr
+1   242	    00F7  A3 0A02r			 mov	 tmpdescr.base_l,ax
+1   243	    00FA  66| C1 E8 10			 shr	 eax,16
+1   244	    00FE  A2 0A04r			 mov	 tmpdescr.base_m,al
+1   245	    0101  88 26	0A07r			 mov	 tmpdescr.base_h,ah
+    246	    0105  C7 06	0A00r 07FF		 mov	 tmpdescr.limit,idt_size-1
+    247	    010B  0F 01	1E 0A00r		 lidt	 tmpdescr
+    248
+    249					 ; Откроем линию A20
+    250	    0110  B0 D1				 mov	 al,0d1h	 ; Команда управления
+    251	    0112  E6 64				 out	 64h,al		 ;  линией A20
+    252	    0114  B0 DF				 mov	 al,0dfh	 ; Код открытия
+    253	    0116  E6 60				 out	 60h,al		 ;  линии A20
+    254
+    255					 ; Переход в защищённый	режим
+    256	    0118  0F 20	C0			 mov	 eax,cr0
+    257	    011B  66| 83 C8 01			 or	 eax,1b
+    258	    011F  0F 22	C0			 mov	 cr0,eax
+    259
+    260					 ; Теперь процессор работает в защищённом режиме
+    261					 ; Загрузка в CS селектора сегмента команд, перезагрузка буфера	команд
+    262	    0122  EA				 db	 0eah		 ; far jmp
+    263	    0123  0127r				 dw	 offset	continue
+    264	    0125  0008				 dw	 sel_code
+    265	    0127			 continue:
+    266
+    267					 ; Инициализируем сегментные регистры
+    268	    0127  B8 0010			 mov	 ax,sel_data
+    269	    012A  8E D8				 mov	 ds,ax
+    270	    012C  B8 0018			 mov	 ax,sel_stack
+    271	    012F  8E D0				 mov	 ss,ax
+    272	    0131  B8 0000			 mov	 ax,0
+    273	    0134  8E C0				 mov	 es,ax
+    274	    0136  8E E8				 mov	 gs,ax
+    275	    0138  8E E0				 mov	 fs,ax
+    276
+    277	    013A  B8 0020			 mov	 ax,sel_tss_0	 ; Загрузка TR селектором TSS_0
+    278	    013D  0F 00	D8			 ltr	 ax
+    279
+    280					 ; Запускаем ядро ОС
+    281	    0140  E8 0000e			 call	 kernel
+    282
+    283					 ; Организация перехода	в реальный режим
+    284					 ; Закроем линию A20
+    285	    0143  B0 D1				 mov	 al,0d1h
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 6
+startup.asm
+
+
+
+    286	    0145  E6 64				 out	 64h,al
+    287	    0147  B0 DD				 mov	 al,0ddh
+    288	    0149  E6 60				 out	 60h,al
+    289
+    290					 ; Переключим режим процессора
+    291	    014B  B0 FE				 mov	 al,0feh	 ; Переходим в реальный	режим
+    292	    014D  E6 64				 out	 64h,al		 ; засылкой кода feh в порт 64h
+    293	    014F  F4				 hlt			 ; Останов в ожидании сброса
+    294
+    295					 ; Теперь процессор снова работает в реальном режиме
+    296					 ; Восстановим операционную среду реального режима
+    297	    0150  B8 0000s		 return: mov	 ax,dgroup
+    298	    0153  8E D8				 mov	 ds,ax
+    299	    0155  B8 0000s			 mov	 ax,_stack
+    300	    0158  8E D0				 mov	 ss,ax
+    301	    015A  BC 0200			 mov	 sp,size _stack
+    302
+    303					 ; Размаскируем	прерывания в контроллере
+    304	    015D  B0 B8				 mov	 al,0b8h
+    305	    015F  E6 21				 out	 21h,al
+    306	    0161  B0 9D				 mov	 al,9dh
+    307	    0163  E6 A1				 out	 0a1h,al
+    308
+    309					 ; Разрешим аппаратные и немаскируемые прерывания
+    310	    0165  FB				 sti
+    311	    0166  B0 00				 mov	 al,0		 ; Разрешим NMI
+    312	    0168  E6 70				 out	 70h,al
+    313
+    314					 ; Проверим выполнение функций DOS и завершим программу
+    315	    016A  B4 09				 mov	 ah,09h
+    316	    016C  BA 0A08r			 mov	 dx,offset message_exit
+    317	    016F  CD 21				 int	 21h
+    318	    0171  B8 4C00			 mov	 ax,4c00h
+    319	    0174  CD 21				 int	 21h
+    320
+    321	    0176			 _TEXT	 ends
+    322
+    323	00000000			 _STACK	 SEGMENT STACK 'STACK'
+    324						 org	 200h
+    325	00000200			 _STACK	 ends
+    326
+    327						 end	 startup
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 7
+Symbol Table
+
+
+
+
+Symbol Name			  Type	 Value
+
+??DATE				  Text	 "02/06/03"
+??FILENAME			  Text	 "startup "
+??TIME				  Text	 "16:34:26"
+??VERSION			  Number 040A
+@CPU				  Text	 0F8FH
+@CURSEG				  Text	 _STACK
+@FILENAME			  Text	 STARTUP
+@WORDSIZE			  Text	 4
+CONTINUE			  Near	 _TEXT:0127
+GDT (_GDT)			  Word	 _DATA:0000
+GDT_CODE			  Struct _DATA:0008 DESCR
+GDT_DATA			  Struct _DATA:0010 DESCR
+GDT_NULL			  Struct _DATA:0000 DESCR
+GDT_SIZE			  Number 0200
+GDT_STACK			  Struct _DATA:0018 DESCR
+GDT_TSS_0			  Struct _DATA:0020 DESCR
+IDT (_IDT)			  Word	 _DATA:0200
+IDT_SIZE			  Number 0800
+KERNEL (_KERNEL)		  Near	 ----:---- Extern
+MESSAGE_EXIT			  Byte	 _DATA:0A08
+NOGD				  Number 0040
+NOINT				  Number 0100
+REAL_DATA (_REAL_DATA)		  Word	 _DATA:0A24
+REAL_TEXT (_REAL_TEXT)		  Word	 _DATA:0A26
+RETURN				  Near	 _TEXT:0150
+SEL_CODE			  Number 0008
+SEL_DATA			  Number 0010
+SEL_STACK			  Number 0018
+SEL_TSS_0			  Number 0020
+STARTUP				  Near	 _TEXT:0000
+TASKS (_TASKS)			  Word	 ----:---- Extern
+TASK_STACK_SIZE			  Number 0200
+TMPDESCR			  Struct _DATA:0A00 DESCR
+
+Macro Name
+
+DELAY
+PHYSICAL_ADDR
+SET_DESCR_BASE
+
+Structure Name			  Type	Offset
+
+DESCR
+ LIMIT				  Word	 0000
+ BASE_L				  Word	 0002
+ BASE_M				  Byte	 0004
+ ATTR_1				  Byte	 0005
+ ATTR_2				  Byte	 0006
+ BASE_H				  Byte	 0007
+INTR
+Turbo Assembler	 Version 4.1	    02/06/03 16:34:26	    Page 8
+Symbol Table
+
+
+
+
+Groups & Segments		  Bit Size Align  Combine Class
+
+DGROUP				  Group
+  _BSS				  16  0000 Word	  Public  BSS
+  _DATA				  16  0A28 Word	  Public  DATA
+_STACK				  32  0200 Para	  Stack	  STACK
+_TEXT				  16  0176 Byte	  Public  CODE
+

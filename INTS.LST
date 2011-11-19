@@ -1,0 +1,382 @@
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 1
+ints.asm
+
+
+
+      1					 ; MMMOC -- учебная операционная система
+      2					 ; (c) 2003, Kolia Morev <kolia39@mail.ru>
+      3					 ;
+      4					 ; Обработчики исключений, прерываний и	сервисы.
+      5
+      6					 .386p
+      7
+      8		  =0200			 TASK_STACK_SIZE = 200h
+      9
+     10					 extrn C do_timer:proc
+     11					 extrn C store_key:proc
+     12					 extrn C puts:proc
+     13					 extrn C exit:proc
+     14					 extrn C dump:proc
+     15					 extrn C dump_stack:proc
+     16					 extrn C halt_cpu:proc
+     17
+     18					 ; Сигнал "конец прерывания" (End Of Interrupt)
+     19					 ; в ведущий контроллер	прерываний.
+     20					 EOI_to_master macro
+     21						 push	 ax
+     22						 mov	 al,20h
+     23						 out	 20h,al
+     24						 pop	 ax
+     25						       endm
+     26
+     27					 ; Сигнал "конец прерывания" (End Of Interrupt)
+     28					 ; в ведомый контроллер	прерываний.
+     29					 EOI_to_slave macro
+     30						 push	 ax
+     31						 mov	 al,20h
+     32						 out	 0a0h,al
+     33						 pop	 ax
+     34						      endm
+     35
+     36					 DGROUP	 group	 _DATA,_BSS
+     37						 assume	 cs:_TEXT,ds:DGROUP
+     38	    0000			 _DATA	 segment word public use16 'DATA'
+     39
+     40		  =000A			 nl = 10
+     41	    0000  2A 20	30 78 30 30 20+	 str_exc_0	 db '* 0x00 #DE	OTKA3: Divide Error',nl,0
+     42		  23 44	45 20 4F 54 4B+
+     43		  41 33	3A 20 44 69 76+
+     44		  69 64	65 20 45 72 72+
+     45		  6F 72	0A 00
+     46	    0020  2A 20	30 78 30 61 20+	 str_exc_0a	 db '* 0x0a #TS	OTKA3: Invalid TSS',nl,0
+     47		  23 54	53 20 4F 54 4B+
+     48		  41 33	3A 20 49 6E 76+
+     49		  61 6C	69 64 20 54 53+
+     50		  53 0A	00
+     51	    003F  2A 20	30 78 30 62 20+	 str_exc_0b	 db '* 0x0b #NP	OTKA3: Segment Not Present',nl,0
+     52		  23 4E	50 20 4F 54 4B+
+     53		  41 33	3A 20 53 65 67+
+     54		  6D 65	6E 74 20 4E 6F+
+     55		  74 20	50 72 65 73 65+
+     56		  6E 74	0A 00
+     57	    0066  2A 20	30 78 30 63 20+	 str_exc_0c	 db '* 0x0c #SS	OTKA3: Stack-Segment Fault',nl,0
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 2
+ints.asm
+
+
+
+     58		  23 53	53 20 4F 54 4B+
+     59		  41 33	3A 20 53 74 61+
+     60		  63 6B	2D 53 65 67 6D+
+     61		  65 6E	74 20 46 61 75+
+     62		  6C 74	0A 00
+     63	    008D  2A 20	30 78 30 64 20+	 str_exc_0d	 db '* 0x0d #GP	OTKA3: General Protection',nl,0
+     64		  23 47	50 20 4F 54 4B+
+     65		  41 33	3A 20 47 65 6E+
+     66		  65 72	61 6C 20 50 72+
+     67		  6F 74	65 63 74 69 6F+
+     68		  6E 0A	00
+     69	    00B3  2A 20	30 78 30 65 20+	 str_exc_0e	 db '* 0x0e #PF	OTKA3: Page Fault',nl,0
+     70		  23 50	46 20 4F 54 4B+
+     71		  41 33	3A 20 50 61 67+
+     72		  65 20	46 61 75 6C 74+
+     73		  0A 00
+     74	    00D1  2A 20	30 78 3F 3F 20+	 str_exc_dummy	 db '* 0x?? #??	_____: Heu3BecTHoe ucKJI|-O4eHue',nl,0
+     75		  23 3F	3F 20 5F 5F 5F+
+     76		  5F 5F	3A 20 48 65 75+
+     77		  33 42	65 63 54 48 6F+
+     78		  65 20	75 63 4B 4A 49+
+     79		  7C 2D	4F 34 65 48 75+
+     80		  65 0A	00
+     81
+     82	    00FE			 _DATA	 ends
+     83
+     84	    0000			 _BSS	 segment word public use16 'BSS'
+     85	    0000			 _BSS	 ends
+     86
+     87	    0000			 _TEXT	 segment byte public use16 'CODE'
+     88						 assume	 cs:_TEXT,ds:DGROUP
+     89
+     90					 extrn C getsc:proc
+     91
+     92					 exception_common macro	str_error
+     93						 local	 dmpstk
+     94						 pushad
+     95					 ;	 cli
+     96						 call	 puts C,offset str_error
+     97						 call	 dump_stack C
+     98					 ;	 sti
+     99						 popad
+    100							  endm
+    101
+    102					 ; Обработчик исключения при делении на	нуль
+    103					 public	C exc_0
+    104	    0000			 exc_0	 proc
+    105	    0000  BB 0001			 mov	 bx,1			 ; Коррекция делителя
+    106						 exception_common str_exc_0
+1   107	    0003  66| 60			 pushad
+2   108	    0005  68 0000r			 PUSH	 OFFSET	STR_EXC_0
+2   109	    0008  E8 0000e			 CALL	 PUTS
+2   110	    000B  83 C4	02			 ADD	 SP,00002h
+1   111	    000E  E8 0000e			 call	 dump_stack C
+1   112	    0011  66| 61			 popad
+    113	    0013  66| CF			 iretd
+    114	    0015			 exc_0	 endp
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 3
+ints.asm
+
+
+
+    115
+    116					 ; Обработчик исключения недопустимого TSS
+    117					 public	C exc_0ah
+    118	    0015			 exc_0ah proc
+    119						 exception_common str_exc_0a
+1   120	    0015  66| 60			 pushad
+2   121	    0017  68 0020r			 PUSH	 OFFSET	STR_EXC_0A
+2   122	    001A  E8 0000e			 CALL	 PUTS
+2   123	    001D  83 C4	02			 ADD	 SP,00002h
+1   124	    0020  E8 0000e			 call	 dump_stack C
+1   125	    0023  66| 61			 popad
+    126	    0025  66| CF			 iretd
+    127	    0027			 exc_0ah endp
+    128
+    129					 ; Обработчик исключения отсутствия сегмента
+    130					 public	C exc_0bh
+    131	    0027			 exc_0bh proc
+    132						 exception_common str_exc_0b
+1   133	    0027  66| 60			 pushad
+2   134	    0029  68 003Fr			 PUSH	 OFFSET	STR_EXC_0B
+2   135	    002C  E8 0000e			 CALL	 PUTS
+2   136	    002F  83 C4	02			 ADD	 SP,00002h
+1   137	    0032  E8 0000e			 call	 dump_stack C
+1   138	    0035  66| 61			 popad
+    139	    0037  66| CF			 iretd
+    140	    0039			 exc_0bh endp
+    141
+    142					 ; Обработчик исключения ошибки	обращения к стеку
+    143					 public	C exc_0ch
+    144	    0039			 exc_0ch proc
+    145						 exception_common str_exc_0c
+1   146	    0039  66| 60			 pushad
+2   147	    003B  68 0066r			 PUSH	 OFFSET	STR_EXC_0C
+2   148	    003E  E8 0000e			 CALL	 PUTS
+2   149	    0041  83 C4	02			 ADD	 SP,00002h
+1   150	    0044  E8 0000e			 call	 dump_stack C
+1   151	    0047  66| 61			 popad
+    152	    0049  66| CF			 iretd
+    153	    004B			 exc_0ch endp
+    154
+    155					 ; Обработчик исключения общей защиты
+    156					 ; Вешает компьютер
+    157					 public	C exc_0dh
+    158	    004B			 exc_0dh proc
+    159						 exception_common str_exc_0d
+1   160	    004B  66| 60			 pushad
+2   161	    004D  68 008Dr			 PUSH	 OFFSET	STR_EXC_0D
+2   162	    0050  E8 0000e			 CALL	 PUTS
+2   163	    0053  83 C4	02			 ADD	 SP,00002h
+1   164	    0056  E8 0000e			 call	 dump_stack C
+1   165	    0059  66| 61			 popad
+    166	    005B  E8 0000e			 call	 halt_cpu
+    167	    005E  66| CF			 iretd
+    168	    0060			 exc_0dh endp
+    169
+    170					 ; Обработчик исключения страничного нарушения
+    171					 public	C exc_0eh
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 4
+ints.asm
+
+
+
+    172	    0060			 exc_0eh proc
+    173						 exception_common str_exc_0e
+1   174	    0060  66| 60			 pushad
+2   175	    0062  68 00B3r			 PUSH	 OFFSET	STR_EXC_0E
+2   176	    0065  E8 0000e			 CALL	 PUTS
+2   177	    0068  83 C4	02			 ADD	 SP,00002h
+1   178	    006B  E8 0000e			 call	 dump_stack C
+1   179	    006E  66| 61			 popad
+    180	    0070  66| CF			 iretd
+    181	    0072			 exc_0eh endp
+    182
+    183					 ; Обработчик остальных	исключений
+    184					 public	C dummy_exc
+    185	    0072			 dummy_exc proc
+    186						 exception_common str_exc_dummy
+1   187	    0072  66| 60			 pushad
+2   188	    0074  68 00D1r			 PUSH	 OFFSET	STR_EXC_DUMMY
+2   189	    0077  E8 0000e			 CALL	 PUTS
+2   190	    007A  83 C4	02			 ADD	 SP,00002h
+1   191	    007D  E8 0000e			 call	 dump_stack C
+1   192	    0080  66| 61			 popad
+    193	    0082  E8 0000e			 call	 halt_cpu
+    194	    0085  66| CF			 iretd
+    195	    0087			 dummy_exc endp
+    196
+    197					 ; Обработчик прерываний от таймера (1/18.2 sec)
+    198					 public	C new_08h
+    199	    0087			 new_08h proc
+    200	    0087  66| 60			 pushad
+    201						 EOI_to_master
+1   202	    0089  50				 push	 ax
+1   203	    008A  B0 20				 mov	 al,20h
+1   204	    008C  E6 20				 out	 20h,al
+1   205	    008E  58				 pop	 ax
+    206	    008F  E8 0000e			 call	 do_timer C
+    207	    0092  66| 61			 popad
+    208	    0094  66| CF			 iretd
+    209	    0096			 new_08h endp
+    210
+    211					 ; Обработчик прерываний от клавиатуры
+    212					 public	C new_09h
+    213	    0096			 new_09h proc
+    214	    0096  50				 push	 ax
+    215	    0097  33 C0				 xor	 ax,ax
+    216	    0099  E4 60				 in	 al,60h		 ; Вводим скан-код из порта 60h
+    217	    009B  3C 80				 cmp	 al,80h
+    218	    009D  73 07				 jae	 @too_big
+    219						 call	 store_key C,ax
+1   220	    009F  50				 PUSH	 AX
+1   221	    00A0  E8 0000e			 CALL	 STORE_KEY
+1   222	    00A3  83 C4	02			 ADD	 SP,00002h
+    223	    00A6			 @too_big:
+    224	    00A6  E4 61				 in	 al,61h		 ; Получим содержимое порта
+    225	    00A8  0C 80				 or	 al,10000000b	 ; установкой старшего бита
+    226	    00AA  E6 61				 out	 61h,al		 ; и последующим сбросом его
+    227	    00AC  24 7F				 and	 al,01111111b	 ; сообщим конроллеру клавиатуры
+    228	    00AE  E6 61				 out	 61h,al		 ; о приёме скан-кода символа
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 5
+ints.asm
+
+
+
+    229	    00B0  58				 pop	 ax
+    230						 EOI_to_master
+1   231	    00B1  50				 push	 ax
+1   232	    00B2  B0 20				 mov	 al,20h
+1   233	    00B4  E6 20				 out	 20h,al
+1   234	    00B6  58				 pop	 ax
+    235	    00B7  66| CF			 iretd
+    236	    00B9			 new_09h endp
+    237
+    238					 ; Процедура для ведущего контроллера
+    239					 public	C master
+    240	    00B9			 master	 proc
+    241						 EOI_to_master
+1   242	    00B9  50				 push	 ax
+1   243	    00BA  B0 20				 mov	 al,20h
+1   244	    00BC  E6 20				 out	 20h,al
+1   245	    00BE  58				 pop	 ax
+    246	    00BF  66| CF			 iretd
+    247	    00C1			 master	 endp
+    248
+    249					 ; Процедура для ведомого контроллера
+    250					 public	C slave
+    251	    00C1			 slave	 proc
+    252						 EOI_to_slave
+1   253	    00C1  50				 push	 ax
+1   254	    00C2  B0 20				 mov	 al,20h
+1   255	    00C4  E6 A0				 out	 0a0h,al
+1   256	    00C6  58				 pop	 ax
+    257						 EOI_to_master
+1   258	    00C7  50				 push	 ax
+1   259	    00C8  B0 20				 mov	 al,20h
+1   260	    00CA  E6 20				 out	 20h,al
+1   261	    00CC  58				 pop	 ax
+    262	    00CD  66| CF			 iretd
+    263	    00CF			 slave	 endp
+    264
+    265					 public	C puts_serv
+    266	    00CF			 puts_serv proc	 far
+    267	    00CF  55				 push	 bp
+    268	    00D0  8B EC				 mov	 bp,sp
+    269	    00D2  FF 76	0A			 push	 word ptr [bp+10]
+    270	    00D5  E8 0000e			 call	 near ptr puts
+    271	    00D8  83 C4	02			 add	 sp,2
+    272	    00DB  5D				 pop	 bp
+    273	    00DC  66				 db	 66h
+    274	    00DD  CB				 ret
+    275	    00DE			 puts_serv endp
+    276
+    277					 public	C exit_serv
+    278	    00DE			 exit_serv proc	 far
+    279	    00DE  55				 push	 bp
+    280	    00DF  8B EC				 mov	 bp,sp
+    281	    00E1  FF 76	0A			 push	 word ptr [bp+10]
+    282	    00E4  E8 0000e			 call	 near ptr exit
+    283	    00E7  83 C4	02			 add	 sp,2
+    284	    00EA  5D				 pop	 bp
+    285	    00EB  66				 db	 66h
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 6
+ints.asm
+
+
+
+    286	    00EC  CB				 ret
+    287	    00ED			 exit_serv endp
+    288
+    289	    00ED			 _TEXT	 ends
+    290
+    291						 end
+Turbo Assembler	 Version 4.1	    02/06/03 16:35:14	    Page 7
+Symbol Table
+
+
+
+
+Symbol Name			  Type	 Value
+
+??DATE				  Text	 "02/06/03"
+??FILENAME			  Text	 "ints	  "
+??TIME				  Text	 "16:35:14"
+??VERSION			  Number 040A
+@CPU				  Text	 0F8FH
+@CURSEG				  Text	 _TEXT
+@FILENAME			  Text	 INTS
+@TOO_BIG			  Near	 _TEXT:00A6
+@WORDSIZE			  Text	 2
+DO_TIMER (_DO_TIMER)		  Near	 ----:---- Extern
+DUMMY_EXC (_DUMMY_EXC)		  Near	 _TEXT:0072
+DUMP (_DUMP)			  Near	 ----:---- Extern
+DUMP_STACK (_DUMP_STACK)	  Near	 ----:---- Extern
+EXC_0 (_EXC_0)			  Near	 _TEXT:0000
+EXC_0AH	(_EXC_0AH)		  Near	 _TEXT:0015
+EXC_0BH	(_EXC_0BH)		  Near	 _TEXT:0027
+EXC_0CH	(_EXC_0CH)		  Near	 _TEXT:0039
+EXC_0DH	(_EXC_0DH)		  Near	 _TEXT:004B
+EXC_0EH	(_EXC_0EH)		  Near	 _TEXT:0060
+EXIT (_EXIT)			  Near	 ----:---- Extern
+EXIT_SERV (_EXIT_SERV)		  Far	 _TEXT:00DE
+GETSC (_GETSC)			  Near	 _TEXT:---- Extern
+HALT_CPU (_HALT_CPU)		  Near	 ----:---- Extern
+MASTER (_MASTER)		  Near	 _TEXT:00B9
+NEW_08H	(_NEW_08H)		  Near	 _TEXT:0087
+NEW_09H	(_NEW_09H)		  Near	 _TEXT:0096
+NL				  Number 000A
+PUTS (_PUTS)			  Near	 ----:---- Extern
+PUTS_SERV (_PUTS_SERV)		  Far	 _TEXT:00CF
+SLAVE (_SLAVE)			  Near	 _TEXT:00C1
+STORE_KEY (_STORE_KEY)		  Near	 ----:---- Extern
+STR_EXC_0			  Byte	 _DATA:0000
+STR_EXC_0A			  Byte	 _DATA:0020
+STR_EXC_0B			  Byte	 _DATA:003F
+STR_EXC_0C			  Byte	 _DATA:0066
+STR_EXC_0D			  Byte	 _DATA:008D
+STR_EXC_0E			  Byte	 _DATA:00B3
+STR_EXC_DUMMY			  Byte	 _DATA:00D1
+TASK_STACK_SIZE			  Number 0200
+
+Macro Name
+
+EOI_TO_MASTER
+EOI_TO_SLAVE
+EXCEPTION_COMMON
+
+Groups & Segments		  Bit Size Align  Combine Class
+
+DGROUP				  Group
+  _BSS				  16  0000 Word	  Public  BSS
+  _DATA				  16  00FE Word	  Public  DATA
+_TEXT				  16  00ED Byte	  Public  CODE
+
